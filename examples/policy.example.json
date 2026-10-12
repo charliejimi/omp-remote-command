@@ -1,0 +1,21 @@
+{
+	"owner": "U012OWNER",
+	"allowlist": ["U012OWNER", "U034TEAMMATE"],
+	"ownerTimeoutMs": 120000,
+	"workdir": "/srv/projects/shop",
+	"auditLog": "/var/lib/omp-remote-command/audit.jsonl",
+	"omp": {
+		"command": ["omp"],
+		"model": "cursor-sdk/claude-opus-5-5",
+		"thinking": "off",
+		"extensions": ["/opt/omp-extensions/cursor-sdk"],
+		"tools": ["read", "bash"],
+		"toolRules": { "bash": "prompt" },
+		"bashPatterns": [
+			{ "match": "rm -rf *", "approval": "deny" },
+			{ "match": "git push*", "approval": "prompt" }
+		],
+		"env": ["CURSOR_API_KEY"],
+		"sessionDir": "/var/lib/omp-remote-command/sessions"
+	}
+}
