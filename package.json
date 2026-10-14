@@ -1,6 +1,6 @@
 {
 	"name": "omp-remote-command",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"private": true,
 	"description": "An oh-my-pi (omp) package for remote command over RPC: a bridge that checks who is asking, forwards only prompts, and sends every tool approval to one owner with the full arguments and a deadline, plus an extension that locks omp's RPC bash side door and refuses to run when omp is not set up for remote use.",
 	"type": "module",

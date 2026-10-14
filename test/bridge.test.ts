@@ -227,6 +227,36 @@ describe("owner-only approval (AC-5)", () => {
 		expect(f.responses()).toEqual([{ type: "extension_ui_response", id: "ui-1", value: "Approve" }]);
 	});
 
+	// omp's question carries no tool call id, and a question can reach the bridge before its own
+	// call's start; with two same-command bash calls, the first question would bind to the wrong one.
+	const crossed = (gap: number) => [
+		{ start: { toolCallId: "STAGING", toolName: "bash", args: { command: "pwd > where.txt", cwd: "staging" } } },
+		{ ask: { method: "select", title: "Allow tool: bash\nCommand: pwd > where.txt", options: ["Approve", "Deny"], wait: false } },
+		{ sleep: gap },
+		{ start: { toolCallId: "PRODUCTION", toolName: "bash", args: { command: "pwd > where.txt", cwd: "production" } } },
+		{ ask: { method: "select", title: "Allow tool: bash\nCommand: pwd > where.txt", options: ["Approve", "Deny"], wait: false } },
+		{ waitAll: true },
+	];
+
+	it("denies both questions of two concurrent same-tool calls, even when a question arrives before its call", async () => {
+		const f = await bridgeFixture();
+		await f.chat.say(TEAMMATE, script({ steps: crossed(0) }));
+		await turnEnded(f);
+		expect(f.responses().map(r => r.value)).toEqual(["Deny", "Deny"]);
+		// The first question is withdrawn when the second call starts; the second is never asked.
+		expect(f.chat.ownerQuestions.length).toBeLessThanOrEqual(1);
+	});
+
+	it("does not let an early Approve through when a second call of the same tool starts within the bind window", async () => {
+		const f = await bridgeFixture();
+		await f.chat.say(TEAMMATE, script({ steps: crossed(150) }));
+		const q = await question(f);
+		await f.chat.answer(OWNER, q.questionId, "Approve");
+		await turnEnded(f);
+		expect(f.responses().map(r => r.value)).toEqual(["Deny", "Deny"]);
+		expect(f.audit().find(e => e.event === "question_settled" && e.questionId === q.questionId)).toMatchObject({ answer: "Deny" });
+	});
+
 	it("cancels confirm, input, editor, and any select that is not a tool approval", async () => {
 		const f = await bridgeFixture();
 		await f.chat.say(

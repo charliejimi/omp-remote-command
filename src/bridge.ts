@@ -63,6 +63,11 @@ interface Question {
 	tool: string;
 	turn: Turn;
 	timer: Timer;
+	askedAt: number;
+	/** The owner's first answer has been taken; later ones are ignored. */
+	answered?: boolean;
+	/** An early Approve, held until the bind window has passed. */
+	hold?: Timer;
 }
 
 interface Outcome {
@@ -296,7 +301,9 @@ export class Bridge {
 			case "tool_execution_start": {
 				const toolCallId = str(frame.toolCallId);
 				if (!toolCallId) break;
-				this.#open.set(toolCallId, { toolName: str(frame.toolName), args: frame.args, bound: false });
+				const toolName = str(frame.toolName);
+				this.#open.set(toolCallId, { toolName, args: frame.args, bound: false });
+				this.#denySameTool(toolName, toolCallId);
 				for (const watcher of [...this.#startWatchers]) watcher();
 				break;
 			}
@@ -348,11 +355,25 @@ export class Bridge {
 		this.#record({ event: "dialog_cancelled", method, title });
 	}
 
-	/** The single open, unbound tool call of `tool`, or "ambiguous" when there is more than one. */
+	/**
+	 * The one open call of `tool`, when it is not bound yet; "ambiguous" when more than one call of
+	 * `tool` is open, bound or not. omp's question carries no tool call id, and it can reach the
+	 * bridge before its own call's start, so with two calls open the question cannot be tied to one.
+	 */
 	#bindable(tool: string): [string, OpenCall] | "ambiguous" | undefined {
-		const matches = [...this.#open].filter(([, call]) => call.toolName === tool && !call.bound);
-		if (matches.length === 0) return undefined;
-		return matches.length === 1 ? matches[0] : "ambiguous";
+		const matches = [...this.#open].filter(([, call]) => call.toolName === tool);
+		if (matches.length > 1) return "ambiguous";
+		return matches.length === 1 && !matches[0]![1].bound ? matches[0] : undefined;
+	}
+
+	/** Another call of `tool` started while a question for `tool` was open, so that question may be bound to the wrong call. */
+	#denySameTool(tool: string, startedId: string): void {
+		for (const [questionId, question] of [...this.#questions]) {
+			if (question.tool !== tool || question.toolCallId === startedId) continue;
+			this.#settle(questionId, { answer: "Deny", answeredBy: null, timedOut: false, reason: `another ${tool} call started while the question was open, so it could not be tied to one call` });
+			const { channelId, requester, messageId } = question.turn;
+			void this.#post(channelId, `${mention(requester)} two ${tool} calls ran at once and their approvals could not be told apart, so they were denied. Ask for them one at a time.`, messageId);
+		}
 	}
 
 	#waitForCall(tool: string): Promise<void> {
@@ -413,7 +434,7 @@ export class Bridge {
 		const questionId = crypto.randomUUID();
 		const deadline = new Date(Date.now() + timeoutMs).toISOString();
 		const timer = setTimeout(() => this.#settle(questionId, { answer: "Deny", answeredBy: null, timedOut: true }), timeoutMs);
-		this.#questions.set(questionId, { ompId, owner, toolCallId, tool, turn, timer });
+		this.#questions.set(questionId, { ompId, owner, toolCallId, tool, turn, timer, askedAt: Date.now() });
 		this.#questionByOmpId.set(ompId, questionId);
 		const question: OwnerQuestion = {
 			questionId,
@@ -453,7 +474,14 @@ export class Bridge {
 		if (!question) return ignore("unknown or settled question");
 		if (answer.userId !== question.owner) return ignore("not the owner");
 		if (answer.answer !== "Approve" && answer.answer !== "Deny") return ignore("not Approve or Deny");
-		this.#settle(answer.questionId, { answer: answer.answer, answeredBy: answer.userId, timedOut: false });
+		if (question.answered) return ignore("already answered");
+		question.answered = true;
+		const settle = () => this.#settle(answer.questionId, { answer: answer.answer, answeredBy: answer.userId, timedOut: false });
+		// A sibling call's start can arrive after its question; an Approve given that early waits out
+		// the bind window, so such a start can still deny it.
+		const wait = answer.answer === "Approve" ? question.askedAt + this.#bindWaitMs - Date.now() : 0;
+		if (wait > 0) question.hold = setTimeout(settle, wait);
+		else settle();
 	}
 
 	#settle(questionId: string, outcome: Outcome): void {
@@ -462,6 +490,7 @@ export class Bridge {
 		this.#questions.delete(questionId);
 		this.#questionByOmpId.delete(question.ompId);
 		clearTimeout(question.timer);
+		clearTimeout(question.hold);
 		if (outcome.answer === "Approve" || outcome.answer === "Deny") {
 			this.#send({ type: "extension_ui_response", id: question.ompId, value: outcome.answer });
 		}

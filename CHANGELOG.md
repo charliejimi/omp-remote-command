@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.1] - 2026-10-14
+
+### Fixed
+
+- The owner's answer can no longer be applied to another call of the same tool. omp's approval question carries no tool call id and can arrive before its own call's start, so with two concurrent calls of one tool the bridge could ask about one call and send the answer to the other. Now a question is bound only while one call of that tool is open, an open question is answered Deny when another call of its tool starts, and an Approve given within the bind window waits until the window has passed.
+
+### Changed
+
+- Concurrent calls of the same tool are denied, also when omp reports them in order, as the README's limits describe. Ask for them one at a time.
+
 ## [0.1.0] - 2026-10-12
 
 ### Added
